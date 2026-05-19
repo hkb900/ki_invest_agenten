@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 from typing import Dict, List
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode
@@ -11,7 +12,9 @@ from urllib.request import Request, urlopen
 
 
 GDELT_DOC_API_URL = "https://api.gdeltproject.org/api/v2/doc/doc"
-TIMEOUT_SECONDS = 10
+TIMEOUT_SECONDS = 8
+CACHE_PATH = Path(__file__).resolve().parents[1] / ".cache" / "gdelt_cache.json"
+CACHE_TTL = timedelta(hours=6)
 
 
 def fetch_gdelt_articles(
@@ -26,8 +29,11 @@ def fetch_gdelt_articles(
 
     limited_days = max(1, min(days, 30))
     limited_max_records = max(1, min(max_records, 50))
-    end_datetime = datetime.now(timezone.utc)
-    start_datetime = end_datetime - timedelta(days=limited_days)
+    cache_key = _build_cache_key(cleaned_query, limited_days, limited_max_records)
+    cache = _read_cache()
+    cached_articles = _get_cached_articles(cache, cache_key, require_fresh=True)
+    if cached_articles is not None:
+        return cached_articles
 
     query_params = urlencode(
         {
@@ -36,8 +42,7 @@ def fetch_gdelt_articles(
             "format": "json",
             "sort": "HybridRel",
             "maxrecords": limited_max_records,
-            "startdatetime": _format_gdelt_datetime(start_datetime),
-            "enddatetime": _format_gdelt_datetime(end_datetime),
+            "timespan": f"{limited_days}d",
         }
     )
     request = Request(
@@ -49,17 +54,100 @@ def fetch_gdelt_articles(
         with urlopen(request, timeout=TIMEOUT_SECONDS) as response:
             payload = json.loads(response.read().decode("utf-8"))
     except (HTTPError, URLError, TimeoutError, json.JSONDecodeError, OSError):
-        return []
+        stale_articles = _get_cached_articles(cache, cache_key, require_fresh=False)
+        return stale_articles if stale_articles is not None else []
 
     articles = payload.get("articles") if isinstance(payload, dict) else None
     if not isinstance(articles, list):
-        return []
+        stale_articles = _get_cached_articles(cache, cache_key, require_fresh=False)
+        return stale_articles if stale_articles is not None else []
 
-    return [_normalize_article(article) for article in articles if isinstance(article, dict)]
+    normalized_articles = [
+        _normalize_article(article)
+        for article in articles
+        if isinstance(article, dict)
+    ]
+    _write_cache_entry(cache, cache_key, normalized_articles)
+
+    return normalized_articles
 
 
-def _format_gdelt_datetime(value: datetime) -> str:
-    return value.strftime("%Y%m%d%H%M%S")
+def _build_cache_key(query: str, days: int, max_records: int) -> str:
+    return json.dumps(
+        {
+            "query": query,
+            "days": days,
+            "max_records": max_records,
+        },
+        sort_keys=True,
+    )
+
+
+def _read_cache() -> Dict:
+    try:
+        with CACHE_PATH.open("r", encoding="utf-8") as cache_file:
+            cache = json.load(cache_file)
+    except (FileNotFoundError, json.JSONDecodeError, OSError):
+        return {}
+
+    return cache if isinstance(cache, dict) else {}
+
+
+def _get_cached_articles(
+    cache: Dict,
+    cache_key: str,
+    require_fresh: bool,
+) -> List[Dict[str, str]] | None:
+    entry = cache.get(cache_key)
+    if not isinstance(entry, dict):
+        return None
+
+    articles = entry.get("articles")
+    if not isinstance(articles, list):
+        return None
+
+    if require_fresh and _cache_entry_is_expired(entry):
+        return None
+
+    return [
+        _normalize_article(article)
+        for article in articles
+        if isinstance(article, dict)
+    ]
+
+
+def _cache_entry_is_expired(entry: Dict) -> bool:
+    cached_at = entry.get("cached_at")
+    if not isinstance(cached_at, str):
+        return True
+
+    try:
+        cached_datetime = datetime.fromisoformat(cached_at)
+    except ValueError:
+        return True
+
+    if cached_datetime.tzinfo is None:
+        cached_datetime = cached_datetime.replace(tzinfo=timezone.utc)
+
+    return datetime.now(timezone.utc) - cached_datetime > CACHE_TTL
+
+
+def _write_cache_entry(
+    cache: Dict,
+    cache_key: str,
+    articles: List[Dict[str, str]],
+) -> None:
+    cache[cache_key] = {
+        "cached_at": datetime.now(timezone.utc).isoformat(),
+        "articles": articles,
+    }
+
+    try:
+        CACHE_PATH.parent.mkdir(parents=True, exist_ok=True)
+        with CACHE_PATH.open("w", encoding="utf-8") as cache_file:
+            json.dump(cache, cache_file, ensure_ascii=False, indent=2)
+    except OSError:
+        return
 
 
 def _normalize_article(article: Dict) -> Dict[str, str]:

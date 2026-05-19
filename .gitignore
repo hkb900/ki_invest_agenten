@@ -4,3 +4,9 @@ logs/*
 reports/*
 __pycache__/
 *.pyc
+.cache/
+browser_agent/login_sessions/*.json
+browser_agent/login_sessions/*.json
+__pycache__/
+*.pyc
+browser_agent/__pycache__/

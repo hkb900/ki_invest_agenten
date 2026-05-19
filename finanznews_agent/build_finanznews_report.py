@@ -27,8 +27,6 @@ MAX_NEWS_COMMENT_LENGTH = 300
 MAX_GDELT_NEWS_COMMENT_LENGTH = 350
 MAX_NEWS_SOURCES = 3
 MAX_REPORT_ROWS = 5
-MAX_GDELT_QUERIES_PER_STOCK = 3
-GDELT_MAX_RECORDS_PER_QUERY = 5
 LEGAL_FORM_WORDS = {
     "AB",
     "AG",
@@ -64,13 +62,6 @@ DEPOT_LABELS = {
     "heribert_finet": "Hfi",
     "heribert_degiro": "Hde",
     "elena_degiro": "Ede",
-}
-COMPANY_QUERY_ALIASES = {
-    "MICRON TECHNOLOGY INC": "Micron Technology",
-    "INVESTOR AB CLASS B": "Investor AB",
-    "BE SEMICONDUCTOR": "BESI Semiconductor",
-    "UCB SA": "UCB Pharma",
-    "HOCHSCHILD MINING PLC": "Hochschild Mining",
 }
 
 
@@ -258,47 +249,20 @@ def _get_depot_label(depot_row: Optional[Dict[str, str]]) -> str:
 
 
 def _build_news_comment(top20_row: Dict[str, str], company_name: str) -> str:
-    queries = build_gdelt_queries(company_name, _get_value(top20_row, TICKER_COLUMNS))
-    if not queries:
+    query = _build_gdelt_query(company_name, _get_value(top20_row, TICKER_COLUMNS))
+    if not query:
         return _format_news_review(build_news_review(company_name, []))
 
-    articles = []
-    for query in queries:
-        try:
-            articles = fetch_gdelt_articles(
-                query,
-                days=7,
-                max_records=GDELT_MAX_RECORDS_PER_QUERY,
-            )
-        except Exception:
-            articles = []
-
-        if articles:
-            break
+    try:
+        articles = fetch_gdelt_articles(query, days=7, max_records=10)
+    except Exception:
+        articles = []
 
     return _format_news_review(build_news_review(company_name, articles))
 
 
 def _build_gdelt_query(company_name: str, ticker: str) -> str:
     return clean_company_query(company_name, ticker)
-
-
-def build_gdelt_queries(company_name: str, ticker: str) -> List[str]:
-    candidates = [
-        clean_company_query(company_name),
-        _company_alias(company_name),
-        _company_name_without_legal_form(company_name),
-        ticker.strip().upper(),
-    ]
-
-    queries: List[str] = []
-    for candidate in candidates:
-        if candidate and candidate not in queries:
-            queries.append(candidate)
-        if len(queries) == MAX_GDELT_QUERIES_PER_STOCK:
-            break
-
-    return queries
 
 
 def clean_company_query(name: str, ticker: str = "") -> str:
@@ -317,25 +281,6 @@ def clean_company_query(name: str, ticker: str = "") -> str:
         return cleaned_name.title()
 
     return ticker.strip().upper()
-
-
-def _company_name_without_legal_form(name: str) -> str:
-    cleaned_name = re.sub(r"[^\w\s]", " ", name.upper())
-    words = [
-        word
-        for word in cleaned_name.split()
-        if word not in LEGAL_FORM_WORDS
-    ]
-
-    return " ".join(words).title()
-
-
-def _company_alias(name: str) -> str:
-    return COMPANY_QUERY_ALIASES.get(_normalize_company_alias_key(name), "")
-
-
-def _normalize_company_alias_key(name: str) -> str:
-    return " ".join(re.sub(r"[^\w\s]", " ", name.upper()).split())
 
 
 def _format_news_review(review: Dict[str, object]) -> str:
