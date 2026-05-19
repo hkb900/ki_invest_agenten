@@ -131,7 +131,7 @@ def build_placeholder_metrics(rows: Iterable[Dict[str, str]]) -> List[Dict[str, 
     ]
 
 
-def fetch_finanzen_metrics(row: Dict[str, str]) -> Dict[str, str]:
+def fetch_finanzen_metrics(row: Dict[str, str], deadline: float | None = None) -> Dict[str, str]:
     fetched_at = datetime.now().isoformat(timespec="seconds")
     search_term = clean_value(row.get("isin")) or clean_value(row.get("ticker")) or clean_value(row.get("name"))
     if not search_term:
@@ -140,19 +140,30 @@ def fetch_finanzen_metrics(row: Dict[str, str]) -> Dict[str, str]:
             "fehler": "Kein Suchbegriff vorhanden",
         }
 
+    timeout_seconds = BROWSER_FETCH_TIMEOUT_SECONDS
+    if deadline is not None:
+        remaining_seconds = deadline - time.monotonic()
+        if remaining_seconds <= 0:
+            return {
+                "finanzen_url": build_search_url(search_term),
+                "abrufzeit": fetched_at,
+                "fehler": "Timeout bei finanzen.net-Abfrage",
+            }
+        timeout_seconds = max(1, min(timeout_seconds, int(remaining_seconds)))
+
     try:
         result = subprocess.run(
             [sys.executable, str(Path(__file__).resolve()), INTERNAL_FETCH_ARG, search_term],
             check=False,
             capture_output=True,
             text=True,
-            timeout=BROWSER_FETCH_TIMEOUT_SECONDS,
+            timeout=timeout_seconds,
         )
     except subprocess.TimeoutExpired:
         return {
             "finanzen_url": build_search_url(search_term),
             "abrufzeit": fetched_at,
-            "fehler": "finanzen.net-Abfrage Timeout",
+            "fehler": "Timeout bei finanzen.net-Abfrage",
         }
 
     if result.returncode != 0:
