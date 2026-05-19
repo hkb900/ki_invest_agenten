@@ -13,13 +13,18 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from connectors.ki_invest_connector import read_depot, read_top20
+from connectors.news_connector import fetch_company_news
 
 
 REPORT_PATH = REPO_ROOT / "reports" / "finanznews_test_report.html"
-NEWS_PLACEHOLDER = "News-Abruf noch nicht aktiviert"
+NO_TICKER_MESSAGE = "Kein Ticker vorhanden"
+NO_NEWS_MESSAGE = "Keine aktuellen Nachrichten gefunden"
+MAX_NEWS_HEADLINES = 3
+MAX_NEWS_COMMENT_LENGTH = 300
 
 NAME_COLUMNS = ("name", "unternehmen", "titel", "wertpapier", "bezeichnung")
 ISIN_COLUMNS = ("isin", "isin_code")
+TICKER_COLUMNS = ("ticker", "symbol", "ticker_yahoo")
 DEPOT_COLUMNS = ("depot", "depot_label", "quelle_depot", "depotname", "depot_name")
 VALUE_COLUMNS = (
     "wert",
@@ -73,7 +78,7 @@ def build_report_rows(
                 "depot": _get_depot_label(depot_row),
                 "wert": _get_value(depot_row, VALUE_COLUMNS) if depot_row else "",
                 "score": _get_value(top20_row, SCORE_COLUMNS),
-                "nachrichten": NEWS_PLACEHOLDER,
+                "nachrichten": _build_news_comment(top20_row),
             }
         )
 
@@ -215,6 +220,46 @@ def _get_depot_label(depot_row: Optional[Dict[str, str]]) -> str:
         return "im D"
 
     return DEPOT_LABELS.get(depot_label.lower(), depot_label[:4])
+
+
+def _build_news_comment(top20_row: Dict[str, str]) -> str:
+    ticker = _get_value(top20_row, TICKER_COLUMNS)
+    if not ticker:
+        return NO_TICKER_MESSAGE
+
+    try:
+        news_items = fetch_company_news(ticker)
+    except Exception:
+        return NO_NEWS_MESSAGE
+
+    headlines = []
+    for news_item in news_items:
+        headline = _extract_headline(news_item)
+        if headline:
+            headlines.append(headline)
+        if len(headlines) == MAX_NEWS_HEADLINES:
+            break
+
+    if not headlines:
+        return NO_NEWS_MESSAGE
+
+    return _limit_text(" | ".join(headlines), MAX_NEWS_COMMENT_LENGTH)
+
+
+def _extract_headline(news_item: Dict) -> str:
+    for key in ("headline", "title", "summary"):
+        value = news_item.get(key)
+        if value is not None and str(value).strip():
+            return " ".join(str(value).split())
+
+    return ""
+
+
+def _limit_text(value: str, max_length: int) -> str:
+    if len(value) <= max_length:
+        return value
+
+    return value[: max_length - 3].rstrip() + "..."
 
 
 def _get_value(row: Optional[Dict[str, str]], candidates: Iterable[str]) -> str:
