@@ -13,6 +13,8 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from connectors.ki_invest_connector import read_depot, read_top20
+from connectors.gdelt_connector import fetch_gdelt_articles
+from connectors.llm_review_connector import build_news_review
 from connectors.news_connector import fetch_company_news
 
 
@@ -21,6 +23,8 @@ NO_TICKER_MESSAGE = "Kein Ticker vorhanden"
 NO_NEWS_MESSAGE = "Keine aktuellen Nachrichten gefunden"
 MAX_NEWS_HEADLINES = 3
 MAX_NEWS_COMMENT_LENGTH = 300
+MAX_GDELT_NEWS_COMMENT_LENGTH = 350
+MAX_NEWS_SOURCES = 3
 
 NAME_COLUMNS = ("name", "unternehmen", "titel", "wertpapier", "bezeichnung")
 ISIN_COLUMNS = ("isin", "isin_code")
@@ -78,7 +82,7 @@ def build_report_rows(
                 "depot": _get_depot_label(depot_row),
                 "wert": _get_value(depot_row, VALUE_COLUMNS) if depot_row else "",
                 "score": _get_value(top20_row, SCORE_COLUMNS),
-                "nachrichten": _build_news_comment(top20_row),
+                "nachrichten": _build_news_comment(top20_row, name),
             }
         )
 
@@ -222,7 +226,55 @@ def _get_depot_label(depot_row: Optional[Dict[str, str]]) -> str:
     return DEPOT_LABELS.get(depot_label.lower(), depot_label[:4])
 
 
-def _build_news_comment(top20_row: Dict[str, str]) -> str:
+def _build_news_comment(top20_row: Dict[str, str], company_name: str) -> str:
+    query = _build_gdelt_query(company_name, _get_value(top20_row, TICKER_COLUMNS))
+    if not query:
+        return _format_news_review(build_news_review(company_name, []))
+
+    try:
+        articles = fetch_gdelt_articles(query, days=7, max_records=10)
+    except Exception:
+        articles = []
+
+    return _format_news_review(build_news_review(company_name, articles))
+
+
+def _build_gdelt_query(company_name: str, ticker: str) -> str:
+    query_parts = []
+    if company_name.strip():
+        query_parts.append(company_name.strip())
+    if ticker.strip():
+        query_parts.append(ticker.strip())
+
+    return " ".join(query_parts)
+
+
+def _format_news_review(review: Dict[str, object]) -> str:
+    sentiment = str(review.get("sentiment", "neutral")).strip() or "neutral"
+    comment = str(review.get("comment", "")).strip()
+    sources = _limit_sources(str(review.get("sources", "")).strip())
+
+    news_text = f"{sentiment}: {comment}"
+    if sources:
+        news_text = f"{news_text} | Quellen: {sources}"
+
+    return _limit_text(news_text, MAX_GDELT_NEWS_COMMENT_LENGTH)
+
+
+def _limit_sources(sources: str) -> str:
+    if not sources:
+        return ""
+
+    source_parts = [
+        source.strip()
+        for source in sources.split(",")
+        if source.strip()
+    ]
+
+    return ", ".join(source_parts[:MAX_NEWS_SOURCES])
+
+
+def _build_finnhub_news_comment(top20_row: Dict[str, str]) -> str:
     ticker = _get_value(top20_row, TICKER_COLUMNS)
     if not ticker:
         return NO_TICKER_MESSAGE
